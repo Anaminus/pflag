@@ -148,6 +148,10 @@ type FlagSet struct {
 	// ParseErrorsWhitelist is used to configure a whitelist of errors
 	ParseErrorsWhitelist ParseErrorsWhitelist
 
+	// KeepUnknownFlags retains flags ignored by
+	// ParseErrorsWhitelist.UnknownFlags instead of stripping them.
+	KeepUnknownFlags bool
+
 	name              string
 	parsed            bool
 	actual            map[NormalizedName]*Flag
@@ -956,6 +960,8 @@ func stripUnknownFlagValue(args []string) []string {
 	return nil
 }
 
+var errSkip = errors.New("skip")
+
 func (f *FlagSet) parseLongArg(s string, args []string, fn parseFunc) (a []string, err error) {
 	a = args
 	name := s[2:]
@@ -976,7 +982,9 @@ func (f *FlagSet) parseLongArg(s string, args []string, fn parseFunc) (a []strin
 		case f.ParseErrorsWhitelist.UnknownFlags:
 			// --unknown=unknownval arg ...
 			// we do not want to lose arg in this case
-			if len(split) >= 2 {
+			if f.KeepUnknownFlags {
+				return a, errSkip
+			} else if len(split) >= 2 {
 				return a, nil
 			}
 
@@ -1031,7 +1039,11 @@ func (f *FlagSet) parseSingleShortArg(shorthands string, args []string, fn parse
 		case f.ParseErrorsWhitelist.UnknownFlags:
 			// '-f=arg arg ...'
 			// we do not want to lose arg in this case
-			if len(shorthands) > 2 && shorthands[1] == '=' {
+			if f.KeepUnknownFlags {
+				outShorts = ""
+				err = errSkip
+				return
+			} else if len(shorthands) > 2 && shorthands[1] == '=' {
 				outShorts = ""
 				return
 			}
@@ -1092,17 +1104,24 @@ func (f *FlagSet) parseShortArg(s string, args []string, fn parseFunc) (a []stri
 	return
 }
 
+func (f *FlagSet) appendArgs(s string, args []string) bool {
+	if !f.interspersed {
+		f.args = append(f.args, s)
+		f.args = append(f.args, args...)
+		return true
+	}
+	f.args = append(f.args, s)
+	return false
+}
+
 func (f *FlagSet) parseArgs(args []string, fn parseFunc) (err error) {
 	for len(args) > 0 {
 		s := args[0]
 		args = args[1:]
 		if len(s) == 0 || s[0] != '-' || len(s) == 1 {
-			if !f.interspersed {
-				f.args = append(f.args, s)
-				f.args = append(f.args, args...)
+			if f.appendArgs(s, args) {
 				return nil
 			}
-			f.args = append(f.args, s)
 			continue
 		}
 
@@ -1115,6 +1134,13 @@ func (f *FlagSet) parseArgs(args []string, fn parseFunc) (err error) {
 			args, err = f.parseLongArg(s, args, fn)
 		} else {
 			args, err = f.parseShortArg(s, args, fn)
+		}
+		if err == errSkip {
+			err = nil
+			if f.appendArgs(s, args) {
+				return nil
+			}
+			continue
 		}
 		if err != nil {
 			return
